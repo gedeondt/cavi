@@ -1,0 +1,9 @@
+shards:
+  - id: 0
+    addr: "127.0.0.1:3000"
+    range_start: "a"
+    range_end: "m"
+  - id: 1
+    addr: "127.0.0.1:3001"
+    range_start: "n"
+    range_end: "z"
