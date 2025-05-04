@@ -47,6 +47,8 @@ async fn get_key(
     Path(key): Path<String>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    println!("[GET] key = '{}'", key);
+
     if !state.router.is_local(&key) {
         let remote = state.router.address_for_key(&key);
         return match state.client.forward_get(&key, &remote).await {
@@ -72,6 +74,8 @@ async fn set_key(
     State(state): State<AppState>,
     Json(payload): Json<SetRequest>,
 ) -> impl IntoResponse {
+    println!("[SET] key = '{}', value = '{}'", key, payload.value);
+
     if !state.router.is_local(&key) {
         let remote = state.router.address_for_key(&key);
         return match state.client.forward_set(&key, &payload.value, &remote).await {
@@ -94,6 +98,8 @@ async fn delete_key(
     Path(key): Path<String>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    println!("[DELETE] key = '{}'", key);
+
     if !state.router.is_local(&key) {
         let remote = state.router.address_for_key(&key);
         return match state.client.forward_delete(&key, &remote).await {

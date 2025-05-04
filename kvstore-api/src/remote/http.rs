@@ -23,7 +23,7 @@ impl RemoteNodeClient for HttpNodeClient {
 
         match res.status().as_u16() {
             200 => {
-                let val = res.text().await.map_err(|e| e.to_string())?;
+                let val: String = res.json().await.map_err(|e| e.to_string())?;
                 Ok(Some(val))
             }
             404 => Ok(None),
