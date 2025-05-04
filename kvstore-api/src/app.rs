@@ -6,13 +6,16 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use kvstore::{KvStore, engine::mem::MemStore};
-
+use axum::http::StatusCode; 
+use axum::response::IntoResponse;
 use crate::shard::router::ShardRouter;
+use crate::remote::RemoteNodeClient;
 
 #[derive(Clone)]
 pub struct AppState {
     store: Arc<Mutex<MemStore>>,
     router: Arc<ShardRouter>,
+    client: Arc<dyn RemoteNodeClient>,
 }
 
 #[derive(Deserialize)]
@@ -26,11 +29,11 @@ struct KeyValue {
     value: String,
 }
 
-pub fn build_app(router: Arc<ShardRouter>) -> Router {
-    let store = MemStore::new();
+pub fn build_app(router: Arc<ShardRouter>, client: Arc<dyn RemoteNodeClient>) -> Router {
     let state = AppState {
-        store: Arc::new(Mutex::new(store)),
+        store: Arc::new(Mutex::new(MemStore::new())),
         router,
+        client,
     };
 
     Router::new()
@@ -40,19 +43,73 @@ pub fn build_app(router: Arc<ShardRouter>) -> Router {
 }
 
 // Handlers
-async fn get_key(Path(key): Path<String>, State(state): State<AppState>) -> Json<Option<String>> {
+async fn get_key(
+    Path(key): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !state.router.is_local(&key) {
+        let remote = state.router.address_for_key(&key);
+        return match state.client.forward_get(&key, &remote).await {
+            Ok(Some(val)) => Json(val).into_response(),
+            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+            Err(e) => {
+                eprintln!("forward_get error: {}", e);
+                StatusCode::BAD_GATEWAY.into_response()
+            }
+        };
+    }
+
     let store = state.store.lock().unwrap();
-    Json(store.get(&key).unwrap())
+    match store.get(&key) {
+        Ok(Some(val)) => Json(val).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
-async fn set_key(Path(key): Path<String>, State(state): State<AppState>, Json(payload): Json<SetRequest>) {
+async fn set_key(
+    Path(key): Path<String>,
+    State(state): State<AppState>,
+    Json(payload): Json<SetRequest>,
+) -> impl IntoResponse {
+    if !state.router.is_local(&key) {
+        let remote = state.router.address_for_key(&key);
+        return match state.client.forward_set(&key, &payload.value, &remote).await {
+            Ok(_) => StatusCode::NO_CONTENT,
+            Err(e) => {
+                eprintln!("forward_set error: {}", e);
+                StatusCode::BAD_GATEWAY
+            }
+        };
+    }
+
     let mut store = state.store.lock().unwrap();
-    store.set(key, payload.value).unwrap();
+    match store.set(key, payload.value) {
+        Ok(_) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
-async fn delete_key(Path(key): Path<String>, State(state): State<AppState>) {
+async fn delete_key(
+    Path(key): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !state.router.is_local(&key) {
+        let remote = state.router.address_for_key(&key);
+        return match state.client.forward_delete(&key, &remote).await {
+            Ok(_) => StatusCode::NO_CONTENT,
+            Err(e) => {
+                eprintln!("forward_delete error: {}", e);
+                StatusCode::BAD_GATEWAY
+            }
+        };
+    }
+
     let mut store = state.store.lock().unwrap();
-    store.delete(&key).unwrap();
+    match store.delete(&key) {
+        Ok(_) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 #[derive(Deserialize)]

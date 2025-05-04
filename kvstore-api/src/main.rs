@@ -1,14 +1,16 @@
 mod config;
 mod app;
 mod shard;
+mod remote;
 
 use config::load_config;
 use crate::shard::router::ShardRouter;
 use tokio::net::TcpListener;
 use axum::serve;
 use crate::app::build_app;
-
+use std::sync::Arc;
 use std::{env};
+use crate::remote::HttpNodeClient;
 
 #[tokio::main]
 async fn main() {
@@ -33,8 +35,9 @@ async fn main() {
     );
 
     let router = std::sync::Arc::new(ShardRouter::new(node_id, config.shards.clone()));
+    let client = Arc::new(HttpNodeClient::new());
 
-    let app = build_app(router);
+    let app = build_app(router, client);
     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("🚀 Listening on http://localhost:3000");
     serve(listener, app).await.unwrap();
