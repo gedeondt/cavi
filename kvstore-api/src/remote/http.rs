@@ -1,6 +1,10 @@
 use super::RemoteNodeClient;
 use async_trait::async_trait;
 use reqwest::Client;
+use reqwest::header::HeaderValue;
+use reqwest::header::CONTENT_TYPE;
+use reqwest::header::HeaderMap;
+
 use serde_json::json;
 use crate::types::KeyValue;
 
@@ -69,8 +73,21 @@ impl RemoteNodeClient for HttpNodeClient {
 
     async fn search_by_prefix(&self, prefix: &str, remote_addr: &str) -> Result<Vec<KeyValue>, String> {
         let url = format!("http://{}/search?prefix={}", remote_addr, prefix);
-        let res = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
-
+    
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-search", HeaderValue::from_static("true"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    
+        println!("🌐 Sending forwarded search to {} with prefix '{}'", remote_addr, prefix);
+    
+        let res = self
+            .client
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+    
         if res.status().is_success() {
             let items = res.json::<Vec<KeyValue>>().await.map_err(|e| e.to_string())?;
             Ok(items)

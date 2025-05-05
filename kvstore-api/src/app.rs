@@ -12,6 +12,9 @@ use crate::shard::router::ShardRouter;
 use crate::remote::RemoteNodeClient;
 use futures::future::join_all;
 use crate::types::{SetRequest, KeyValue, SearchParams};
+use axum::http::HeaderMap;
+use axum::extract::Request;
+use axum::body::Body;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -109,31 +112,73 @@ async fn delete_key(
     }
 }
 
-async fn search_by_prefix(
+pub async fn search_by_prefix(
     Query(params): Query<SearchParams>,
     State(state): State<AppState>,
+    req: Request<Body>, // ✅ para acceder a las cabeceras
 ) -> impl IntoResponse {
     let prefix = params.prefix.clone();
+    let my_id = state.router.my_id;
 
-    // Todas las direcciones de los shards
-    let all_shards = &state.router.shards;
+    println!("🔍 Node {} received /search?prefix={}", my_id, prefix);
 
-    // Llamadas a cada nodo
-    let tasks = all_shards.iter().map(|shard| {
-        let client = state.client.clone();
-        let prefix = prefix.clone();
-        let addr = shard.addr.clone();
-        async move {
-            client
-                .search_by_prefix(&prefix, &addr)
-                .await
-                .unwrap_or_else(|_| vec![]) // silencia errores individuales
-        }
-    });
+    // ✅ Leer cabecera para evitar reenvíos circulares
+    let headers: &HeaderMap = req.headers();
+    let forwarded = headers.get("x-forwarded-search").is_some();
 
-    // Ejecutar en paralelo y fusionar
-    let results: Vec<Vec<KeyValue>> = join_all(tasks).await;
-    let flattened: Vec<KeyValue> = results.into_iter().flatten().collect();
+    if forwarded {
+        println!("↪️ Node {}: This is a forwarded request, no further forwarding.", my_id);
+    } else {
+        println!("🚀 Node {}: This is an original request, will forward to other nodes.", my_id);
+    }
 
-    Json(flattened)
+    // 🧠 Búsqueda local
+    let local_result = {
+        let store = state.store.lock().unwrap();
+        let matches: Vec<_> = store
+            .search_by_prefix(&prefix)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| KeyValue { key: k, value: v })
+            .collect();
+
+        println!("📦 Node {}: Found {} local matches", my_id, matches.len());
+        matches
+    };
+
+    // 🚫 Si reenviada, devolvemos solo local
+    if forwarded {
+        return Json(local_result);
+    }
+
+    // ✅ Reenviar a los demás nodos
+    let remote_tasks = state
+        .router
+        .shards
+        .iter()
+        .filter(|shard| shard.id != my_id)
+        .map(|shard| {
+            let client = state.client.clone();
+            let prefix = prefix.clone();
+            let addr = shard.addr.clone();
+            async move {
+                println!("🔁 Node {}: Forwarding search to {}", my_id, addr);
+                client
+                    .search_by_prefix(&prefix, &addr)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("❌ Node {}: Error searching on {}: {}", my_id, addr, e);
+                        vec![]
+                    })
+            }
+        });
+
+    let mut all_results = join_all(remote_tasks).await;
+    all_results.push(local_result);
+
+    let combined: Vec<KeyValue> = all_results.into_iter().flatten().collect();
+
+    println!("✅ Node {}: Returning total of {} matches", my_id, combined.len());
+
+    Json(combined)
 }
