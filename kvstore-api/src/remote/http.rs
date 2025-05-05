@@ -2,6 +2,7 @@ use super::RemoteNodeClient;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::json;
+use crate::types::KeyValue;
 
 pub struct HttpNodeClient {
     client: Client,
@@ -17,6 +18,7 @@ impl HttpNodeClient {
 
 #[async_trait]
 impl RemoteNodeClient for HttpNodeClient {
+
     async fn forward_get(&self, key: &str, remote_addr: &str) -> Result<Option<String>, String> {
         let url = format!("http://{}/kv/{}", remote_addr, key);
         let res = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
@@ -63,4 +65,18 @@ impl RemoteNodeClient for HttpNodeClient {
             Err(format!("Delete failed: {}", res.status()))
         }
     }
+
+
+    async fn search_by_prefix(&self, prefix: &str, remote_addr: &str) -> Result<Vec<KeyValue>, String> {
+        let url = format!("http://{}/search?prefix={}", remote_addr, prefix);
+        let res = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
+
+        if res.status().is_success() {
+            let items = res.json::<Vec<KeyValue>>().await.map_err(|e| e.to_string())?;
+            Ok(items)
+        } else {
+            Err(format!("search failed: {}", res.status()))
+        }
+    }
+
 }

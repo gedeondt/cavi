@@ -2,6 +2,7 @@ mod config;
 mod app;
 mod shard;
 mod remote;
+mod types;
 
 use config::load_config;
 use crate::shard::router::ShardRouter;

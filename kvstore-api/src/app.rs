@@ -3,30 +3,21 @@ use axum::{
     routing::{get},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+
 use std::sync::{Arc, Mutex};
 use kvstore::{KvStore, engine::mem::MemStore};
 use axum::http::StatusCode; 
 use axum::response::IntoResponse;
 use crate::shard::router::ShardRouter;
 use crate::remote::RemoteNodeClient;
+use futures::future::join_all;
+use crate::types::{SetRequest, KeyValue, SearchParams};
 
 #[derive(Clone)]
 pub struct AppState {
     store: Arc<Mutex<MemStore>>,
     router: Arc<ShardRouter>,
     client: Arc<dyn RemoteNodeClient>,
-}
-
-#[derive(Deserialize)]
-struct SetRequest {
-    value: String,
-}
-
-#[derive(Serialize)]
-struct KeyValue {
-    key: String,
-    value: String,
 }
 
 pub fn build_app(router: Arc<ShardRouter>, client: Arc<dyn RemoteNodeClient>) -> Router {
@@ -118,18 +109,31 @@ async fn delete_key(
     }
 }
 
-#[derive(Deserialize)]
-struct SearchParams {
-    prefix: String,
-}
+async fn search_by_prefix(
+    Query(params): Query<SearchParams>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let prefix = params.prefix.clone();
 
-async fn search_by_prefix(Query(params): Query<SearchParams>, State(state): State<AppState>) -> Json<Vec<KeyValue>> {
-    let store = state.store.lock().unwrap();
-    let result = store
-        .search_by_prefix(&params.prefix)
-        .unwrap()
-        .into_iter()
-        .map(|(k, v)| KeyValue { key: k, value: v })
-        .collect();
-    Json(result)
+    // Todas las direcciones de los shards
+    let all_shards = &state.router.shards;
+
+    // Llamadas a cada nodo
+    let tasks = all_shards.iter().map(|shard| {
+        let client = state.client.clone();
+        let prefix = prefix.clone();
+        let addr = shard.addr.clone();
+        async move {
+            client
+                .search_by_prefix(&prefix, &addr)
+                .await
+                .unwrap_or_else(|_| vec![]) // silencia errores individuales
+        }
+    });
+
+    // Ejecutar en paralelo y fusionar
+    let results: Vec<Vec<KeyValue>> = join_all(tasks).await;
+    let flattened: Vec<KeyValue> = results.into_iter().flatten().collect();
+
+    Json(flattened)
 }
